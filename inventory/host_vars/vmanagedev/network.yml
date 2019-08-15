@@ -1,0 +1,19 @@
+viptela:
+  system_ip: 1.1.1.1
+  transport_ip: 192.168.3.2
+  org: "{{ organization_name }}"
+  site_id: 100
+  vbond:
+    remote: 192.168.3.3
+vpn_instances:
+  - vpn_id: 0
+    interfaces:
+      - if_name: eth1
+        ip:
+          address: 192.168.3.2/24
+        tunnel_interface:
+        enabled: true
+    routes:
+      - prefix: 0.0.0.0/0
+        next_hop:
+          address: 192.168.3.1

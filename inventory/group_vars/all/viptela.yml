@@ -1,0 +1,7 @@
+organization_name: "lab.local"
+vbond:
+  remote: 192.168.3.3
+#serial_number_file: "{{ playbook_dir }}/licenses/serialFile.viptela"
+viptela_cert_dir: "{{ lookup('env', 'PWD') }}/myCA"
+# Encrypt/Vault this in real life
+viptela_CA_passphrase: admin

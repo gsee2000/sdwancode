@@ -1,0 +1,203 @@
+---
+
+- name: Verify that vManage is fully operational
+  hosts: localhost
+  tags:
+    - check_control
+    - check_all
+    - control
+    - edge
+    - CA
+  any_errors_fatal: true
+  gather_facts: no
+  tasks:
+    - name: Waiting for vManage API to start
+      uri:
+        url: "https://{{ hostvars['vmanagedev'].ansible_host }}/dataservice/system/device/controllers"
+        method: POST
+        body:
+          j_username: "{{ viptela_api_username }}"
+          j_password: "{{ viptela_api_password }}"
+        body_format: form-urlencoded
+        return_content: yes
+        validate_certs: no
+      no_log: false
+      register: uri_results
+      delegate_to: localhost
+      failed_when: false
+      until: uri_results.msg.find("OK") != -1
+      retries: 60
+      delay: 10
+
+- name: Create local CA
+  hosts: localhost
+  tags:
+    - control
+    - edge
+    - CA
+  any_errors_fatal: true
+  gather_facts: no
+  tasks:
+    - name: Ensure directory exists for local self-signed TLS certs.
+      file:
+        path: "{{ viptela_cert_dir }}"
+        state: directory
+
+    - name: Generate an OpenSSL private key.
+      openssl_privatekey:
+        cipher: auto
+        passphrase: "{{ viptela_CA_passphrase }}"
+        path: "{{ viptela_cert_dir }}/myCA.key"
+
+    - name: Generate an OpenSSL CSR.
+      openssl_csr:
+        path: "{{ viptela_cert_dir }}/myCA.csr"
+        privatekey_path: "{{ viptela_cert_dir }}/myCA.key"
+        privatekey_passphrase: "{{ viptela_CA_passphrase }}"
+        common_name: viptelaCA.local
+
+    - name: Generate a Self Signed OpenSSL certificate.
+      openssl_certificate:
+        path: "{{ viptela_cert_dir }}/myCA.pem"
+        privatekey_path: "{{ viptela_cert_dir }}/myCA.key"
+        privatekey_passphrase: "{{ viptela_CA_passphrase }}"
+        csr_path: "{{ viptela_cert_dir }}/myCA.csr"
+        provider: selfsigned
+
+
+- name: Configuring Viptela components
+  hosts: viptela_control
+  tags:
+    - control
+    - edge
+  any_errors_fatal: true
+  connection: netconf
+  gather_facts: no
+  tasks:
+    - name: Push NETCONF template
+      netconf_config:
+        content: "{{ lookup('template', 'viptela/netconf.j2') }}"
+
+
+- name: Verify that vManage is fully operational
+  hosts: localhost
+  tags:
+    - check_control
+    - check_all
+    - control
+    - edge
+    - CA
+  any_errors_fatal: true
+  gather_facts: no
+  tasks:
+    - name: Waiting for vManage API to start
+      uri:
+        url: "https://{{ hostvars['vmanagedev'].ansible_host }}/dataservice/system/device/controllers"
+        method: POST
+        body:
+          j_username: "{{ viptela_api_username }}"
+          j_password: "{{ viptela_api_password }}"
+        body_format: form-urlencoded
+        return_content: yes
+        validate_certs: no
+      no_log: false
+      register: uri_results
+      delegate_to: localhost
+      failed_when: false
+      until: uri_results.msg.find("OK") != -1
+      retries: 60
+      delay: 10
+
+- name: Configure vmanage
+  hosts: localhost
+  roles:
+    - ansible-viptela
+  tags:
+    - control
+    - edge
+  any_errors_fatal: true
+  gather_facts: yes
+  tasks:
+    - set_fact:
+        vmanage_host: "{{ groups.vmanage_hosts | first }}"
+
+    - set_fact:
+        vmanage_ip: "{{ hostvars[vmanage_host].ansible_host }}"
+
+    - debug:
+        msg: "vManage IP: {{ vmanage_ip }}"
+
+    - name: Add vBond Hosts
+      include_role:
+        name: ansible-viptela
+        tasks_from: add-controller
+      vars:
+        device_hostname: "{{ item }}"
+        device_ip: "{{ hostvars[item].viptela.transport_ip }}"
+        device_personality: vbond
+      loop: "{{ groups.vbond_hosts }}"
+
+    - name: Add vSmart Hosts
+      include_role:
+        name: ansible-viptela
+        tasks_from: add-controller
+      vars:
+        device_hostname: "{{ item }}"
+        device_ip: "{{ hostvars[item].viptela.transport_ip }}"
+        device_personality: vsmart
+      loop: "{{ groups.vsmart_hosts }}"
+
+    - name: Set organization
+      include_role:
+        name: ansible-viptela
+        tasks_from: set-org
+      vars:
+        org_name: "{{ organization_name }}"
+
+    - set_fact:
+        vbond_controller: "{{ groups.vbond_hosts[0] }}"
+
+    - name: Set vBond
+      include_role:
+        name: ansible-viptela
+        tasks_from: set-vbond
+      vars:
+        vbond_ip: "{{ hostvars[vbond_controller].viptela.transport_ip }}"
+
+    - name: Set Enterprise Root CA
+      include_role:
+        name: ansible-viptela
+        tasks_from: set-rootca
+      vars:
+        root_cert: "{{lookup('file', '{{ viptela_cert_dir }}/myCA.pem')}}"
+
+    - name: Get Controler CSR
+      include_role:
+        name: ansible-viptela
+        tasks_from: get-csr
+      vars:
+        device_ip: "{{ hostvars[item].viptela.transport_ip }}"
+        device_hostname: "{{ item }}"
+        csr_filename: "{{ viptela_cert_dir }}/{{ item }}.csr"
+      loop: "{{ groups.viptela_control }}"
+
+    - name: Sign Controller Cert
+      openssl_certificate:
+        csr_path: "{{ viptela_cert_dir }}/{{ item }}.csr"
+        path: "{{ viptela_cert_dir }}/{{ item }}.crt"
+        provider: ownca
+        ownca_path: "{{ viptela_cert_dir }}/myCA.pem"
+        ownca_privatekey_path: "{{ viptela_cert_dir }}/myCA.key"
+        ownca_privatekey_passphrase: "{{ viptela_CA_passphrase }}"
+      loop: "{{ groups.viptela_control }}"
+      delegate_to: localhost
+
+    - name: Install Controller Certificate
+      include_role:
+        name: ansible-viptela
+        tasks_from: install-cert
+      vars:
+        device_cert: "{{lookup('file', '{{ viptela_cert_dir }}/{{ item }}.crt')}}"
+      loop: "{{ groups.viptela_control }}"
+
+
