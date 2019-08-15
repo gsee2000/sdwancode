@@ -1,0 +1,3 @@
+[submodule "ansible-viptela"]
+	path = ansible-viptela
+	url = https://github.com/CiscoDevNet/ansible-viptela.git
